@@ -7,14 +7,159 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <signal.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <uuid/uuid.h>
 #include "DepakSlice.h"
 #include "DepakCRC.h"
 #include "DepakInfo.h"
 #include "DepakType.h"
+#define SERV_PORT 8000
 #define PATHLEN 100U
 
 
-const char BASE_DIR[PATHLEN] = "/home/junk_chuan/Desktop/temp/";
+const char BASE_DIR[PATHLEN] = "/home/junk_chuan/Desktop/recv/";
+// 设置临时文件的后缀为.pak
+const char POST_FIX[5] = ".pak";
+
+//-----------------------------------------------socket模块-----------------------
+//封装出错函数
+const char COMFIRM_MSG[5] = "OK";
+void sys_err(const char *ptr,int num)
+{
+    perror(ptr);
+    exit(num);
+}
+
+/*
+ * 字符串匹配函数
+ * param.line: 输入字符串
+ * param.mat: 匹配对应字符串
+ * 完全相同返回1，
+ * 否则返回0
+ */
+int strmatch(char line[], const char *mat)
+{
+    int i = strlen(line), j = 0, k = 0;
+    if (i == strlen(mat))
+    {
+        for (; j < strlen(mat); j++, k++)
+        {
+            if (line[k] != *(mat + j))
+                break;
+        }
+        if (*(mat + j) == '\0' && k>0)
+            return 1;
+    }
+    return 0;
+}
+
+void socket_recv()
+{
+    signal(SIGPIPE,SIG_IGN);
+    int sockfd,accefd;
+    struct sockaddr_in seraddr,cliaddr;
+    socklen_t len;
+
+    bzero(&seraddr,sizeof(seraddr));
+    bzero(&cliaddr,sizeof(cliaddr));
+
+    //socket
+    sockfd = socket(AF_INET,SOCK_STREAM,0);
+    if(sockfd < 0)
+    {
+        sys_err("socket",-1);
+    }
+
+    //初始化ip地址+port端口号
+    seraddr.sin_family = AF_INET;
+    seraddr.sin_port = htons(SERV_PORT);
+    seraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    //bind
+    if(bind(sockfd,(struct sockaddr *)&seraddr,sizeof(seraddr)) < 0)
+    {
+        sys_err("bind",-2);
+    }
+
+    //listen
+    if(listen(sockfd,128) < 0 )
+    {
+        sys_err("listen",-3);
+    }
+    //accept
+    // 利用uuid生成唯一标识符，以免存储时文件名重复
+    uuid_t uuid;
+    char *filepath = (char *)malloc(sizeof(char) * PATHLEN);
+    char str[37];
+    int fd, count;    
+    while(1)
+    {
+        int flag = 0;
+        char buf[4096];
+        len = sizeof(cliaddr);
+        accefd = accept(sockfd,(struct sockaddr *)&cliaddr,&len);
+        if(accefd < 0)
+        {
+            if(errno == EINTR)  //判断阻塞等待客户端的链接;是被信号打断还是其它因素
+                continue;
+            else
+                sys_err("accept",-4);
+        }
+
+        //开始文件的读写操作
+        memset(buf,0x00,sizeof(buf));
+        // 生成唯一标识符
+        uuid_generate(uuid);
+        uuid_unparse(uuid, str);
+        // 利用唯一标识符生成唯一的文件路径
+        memset(filepath, '\0', sizeof(filepath));
+        strcat(filepath, BASE_DIR);
+        strcat(filepath, str);
+        strcat(filepath, POST_FIX);
+        int filefd = open(filepath, O_WRONLY | O_CREAT | O_TRUNC,0777);
+        while(1)
+        {
+            if(filefd < 0)
+                sys_err("open",-5);
+
+            int leng = read(accefd,buf,sizeof(buf));
+            if(leng == 0)
+            {
+                printf("Opposite have close the socket.\n"); 
+                break; //表示文件已经读到了结尾,也意味着客户端关闭了socket
+            }
+            if(leng == -1 && errno == EINTR)
+                continue;
+            if(leng == -1 )
+                break; //表示出现了严重的错误
+            if (strmatch(buf, COMFIRM_MSG))
+            {
+                flag = 1;
+                break;
+            }
+            write(filefd,buf,leng);
+        }
+
+        //若文件的读写已经结束,则关闭文件描述符
+        close(filefd);
+        close(accefd);
+        if (flag)
+        {
+            remove(filepath);
+            break;
+        }
+    }
+    free(filepath);
+    filepath = NULL;
+    close(sockfd);
+    return;
+}
+
 
 // student:///home/junk_chuan/Desktop/help.md
 //-----------------------------------------------文件I/O模块-----------------------
@@ -114,6 +259,12 @@ char **getFileList(const char *basePath, int piece, unsigned int *lastDataSize, 
 
 int main(void)
 {
+    // ----------------------------------------socket
+    // 作为服务端接收文件，存入缓存
+    socket_recv();
+
+    // ----------------------------------------cache
+    // 读取缓存文件
     int piece = readFileList(BASE_DIR);
     unsigned int lastDataSize; // 用于储存最后单独分组的文件的大小
     unsigned int index;

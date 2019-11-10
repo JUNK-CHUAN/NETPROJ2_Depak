@@ -6,7 +6,7 @@ char* fileFormat(char* data, char* form, unsigned int length) {
 	char* ptr = NULL;
 	int a;
 	ptr = (char*)malloc((length - 1) * sizeof(char));
-    memset(ptr,'\0',sizeof(ptr));
+    	memset(ptr,'\0',sizeof(ptr));
 	a = data[0];
 	if(a == 64) {
 		strcat(form, ".txt\0");
